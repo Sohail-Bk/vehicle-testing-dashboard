@@ -201,6 +201,19 @@ app.layout = html.Div([
     ], style={'display': 'flex', 'padding': '20px', 'backgroundColor': '#f5f7fb'}),
 
     html.Div(id='status-message', style={'padding': '0 20px', 'color': '#0f766e', 'fontWeight': 'bold'}),
+    html.Div([
+        html.Button('Export current report', id='export-report-btn', n_clicks=0, style={
+            'margin': '0 20px 20px 20px',
+            'padding': '10px 18px',
+            'backgroundColor': '#0f4c81',
+            'color': 'white',
+            'border': 'none',
+            'borderRadius': '8px',
+            'cursor': 'pointer',
+            'fontWeight': 'bold'
+        }),
+        dcc.Download(id='download-report')
+    ]),
     html.Div(id='fault-cards', style={'display': 'grid', 'gridTemplateColumns': 'repeat(auto-fit, minmax(200px, 1fr))', 'gap': '16px', 'padding': '0 20px 20px'}),
     html.Div(id='kpi-cards', style={'display': 'grid', 'gridTemplateColumns': 'repeat(auto-fit, minmax(200px, 1fr))', 'gap': '16px', 'padding': '0 20px 20px'}),
 
@@ -381,10 +394,8 @@ def update_fault_table(vehicle_id, start_date, end_date):
     if faults.empty:
         return html.Div('No active faults detected in the selected time range.')
 
-    # sort by timestamp and severity order
     severity_order = {'Critical': 0, 'Warning': 1, 'Info': 2}
-    faults = faults.sort_values(['timestamp', 'severity'], key=lambda s: s.map(severity_order) if s.name == 'severity' else s)
-
+    faults = faults.assign(__severity_rank=faults['severity'].map(severity_order)).sort_values(['timestamp', '__severity_rank'])
     rows = [
         html.Tr([
             html.Td(pd.to_datetime(row['timestamp']).strftime('%Y-%m-%d %H:%M:%S') if pd.notna(row['timestamp']) else 'N/A', style={'padding': '8px'}),
@@ -510,6 +521,27 @@ def update_throttle(vehicle_id, start_date, end_date):
     if 'throttle_position_pct' not in dfx.columns:
         return go.Figure()
     return make_line_chart(dfx['timestamp'], dfx['throttle_position_pct'], 'Throttle Position', '%', '#6366f1')
+
+
+@app.callback(
+    Output('download-report', 'data'),
+    Input('export-report-btn', 'n_clicks'),
+    State('vehicle-dropdown', 'value'),
+    State('date-range', 'start_date'),
+    State('date-range', 'end_date'),
+    prevent_initial_call=True
+)
+def export_report(n_clicks, vehicle_id, start_date, end_date):
+    if vehicle_id is None:
+        return dash.no_update
+    dfx = get_filtered_data(vehicle_id, start_date, end_date)
+    if dfx.empty:
+        return dash.no_update
+
+    csv_buffer = StringIO()
+    dfx.to_csv(csv_buffer, index=False)
+    filename = f'{vehicle_id}_report_{pd.Timestamp.today().strftime("%Y%m%d_%H%M%S")}.csv'
+    return dcc.send_string(csv_buffer.getvalue(), filename=filename)
 
 
 if __name__ == '__main__':
