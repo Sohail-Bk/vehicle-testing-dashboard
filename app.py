@@ -122,6 +122,35 @@ def make_line_chart(x, y, title, yaxis_title, color='#2563eb'):
     return fig
 
 
+def compute_faults(dfx):
+    if dfx.empty:
+        return pd.DataFrame(columns=['timestamp', 'severity', 'code', 'message'])
+
+    faults = []
+    for _, row in dfx.iterrows():
+        ts = row['timestamp']
+        if pd.notna(row.get('battery_soc_percent')) and row['battery_soc_percent'] < 20:
+            faults.append({'timestamp': ts, 'severity': 'Critical', 'code': 'LOW_SOC', 'message': f"SOC low at {row['battery_soc_percent']:.1f}%"})
+        if pd.notna(row.get('battery_temperature_c')) and row['battery_temperature_c'] > 55:
+            faults.append({'timestamp': ts, 'severity': 'Warning', 'code': 'BAT_TEMP_HIGH', 'message': f"Battery temp {row['battery_temperature_c']:.1f}°C"})
+        if pd.notna(row.get('motor_temperature_c')) and row['motor_temperature_c'] > 75:
+            faults.append({'timestamp': ts, 'severity': 'Warning', 'code': 'MOTOR_TEMP_HIGH', 'message': f"Motor temp {row['motor_temperature_c']:.1f}°C"})
+        if pd.notna(row.get('inverter_temperature_c')) and row['inverter_temperature_c'] > 80:
+            faults.append({'timestamp': ts, 'severity': 'Critical', 'code': 'INVERTER_TEMP_HIGH', 'message': f"Inverter temp {row['inverter_temperature_c']:.1f}°C"})
+        if pd.notna(row.get('battery_voltage_v')) and row['battery_voltage_v'] < 300:
+            faults.append({'timestamp': ts, 'severity': 'Critical', 'code': 'BAT_VOLT_LOW', 'message': f"Battery voltage {row['battery_voltage_v']:.1f}V"})
+        if pd.notna(row.get('battery_voltage_v')) and row['battery_voltage_v'] > 400:
+            faults.append({'timestamp': ts, 'severity': 'Critical', 'code': 'BAT_VOLT_HIGH', 'message': f"Battery voltage {row['battery_voltage_v']:.1f}V"})
+        if pd.notna(row.get('battery_current_a')) and row['battery_current_a'] > 180:
+            faults.append({'timestamp': ts, 'severity': 'Warning', 'code': 'CURRENT_HIGH', 'message': f"Current {row['battery_current_a']:.1f}A"})
+        if pd.notna(row.get('regenerative_braking_kw')) and row['regenerative_braking_kw'] > 50:
+            faults.append({'timestamp': ts, 'severity': 'Info', 'code': 'REGEN_HIGH', 'message': f"Regen power {row['regenerative_braking_kw']:.1f}kW"})
+        if pd.notna(row.get('vehicle_speed_kmh')) and row['vehicle_speed_kmh'] > 120:
+            faults.append({'timestamp': ts, 'severity': 'Warning', 'code': 'SPEED_HIGH', 'message': f"Speed {row['vehicle_speed_kmh']:.1f} km/h"})
+
+    return pd.DataFrame(faults)
+
+
 app.layout = html.Div([
     html.Div([
         html.H1('🚗 EV Vehicle Testing Dashboard', style={'color': 'white', 'margin': 0}),
@@ -172,6 +201,7 @@ app.layout = html.Div([
     ], style={'display': 'flex', 'padding': '20px', 'backgroundColor': '#f5f7fb'}),
 
     html.Div(id='status-message', style={'padding': '0 20px', 'color': '#0f766e', 'fontWeight': 'bold'}),
+    html.Div(id='fault-cards', style={'display': 'grid', 'gridTemplateColumns': 'repeat(auto-fit, minmax(200px, 1fr))', 'gap': '16px', 'padding': '0 20px 20px'}),
     html.Div(id='kpi-cards', style={'display': 'grid', 'gridTemplateColumns': 'repeat(auto-fit, minmax(200px, 1fr))', 'gap': '16px', 'padding': '0 20px 20px'}),
 
     html.Div([
@@ -200,8 +230,8 @@ app.layout = html.Div([
     ], style={'display': 'flex', 'flexWrap': 'wrap'}),
 
     html.Div([
-        html.H3('Summary Report', style={'marginBottom': '10px'}),
-        html.Div(id='summary-table')
+        html.H3('Fault Log', style={'marginBottom': '10px'}),
+        html.Div(id='fault-table')
     ], style={'padding': '20px'})
 ], style={'fontFamily': 'Arial, sans-serif', 'backgroundColor': '#ffffff'})
 
@@ -262,7 +292,7 @@ def update_data_source(source_value, contents, filename):
 
 @app.callback(Output('upload-data', 'style'), Input('data-source', 'value'))
 def show_upload_style(data_source):
-    style = {
+    return {
         'width': '100%',
         'height': '40px',
         'lineHeight': '40px',
@@ -273,7 +303,6 @@ def show_upload_style(data_source):
         'marginTop': '10px',
         'display': 'block' if data_source == 'upload' else 'none'
     }
-    return style
 
 
 @app.callback(
@@ -307,6 +336,74 @@ def update_kpis(vehicle_id, start_date, end_date):
             html.Div(value, style={'fontSize': '28px', 'fontWeight': 'bold', 'color': color})
         ], style={'padding': '18px 16px', 'backgroundColor': '#f8fafc', 'borderLeft': f'4px solid {color}', 'borderRadius': '8px'}))
     return cards
+
+
+@app.callback(
+    Output('fault-cards', 'children'),
+    Input('vehicle-dropdown', 'value'),
+    Input('date-range', 'start_date'),
+    Input('date-range', 'end_date')
+)
+def update_fault_cards(vehicle_id, start_date, end_date):
+    if vehicle_id is None:
+        return []
+    dfx = get_filtered_data(vehicle_id, start_date, end_date)
+    if dfx.empty:
+        return []
+
+    faults = compute_faults(dfx)
+    critical = len(faults[faults['severity'] == 'Critical'])
+    warnings = len(faults[faults['severity'] == 'Warning'])
+    info = len(faults[faults['severity'] == 'Info'])
+
+    cards = [
+        ('Critical', critical, '#dc2626'),
+        ('Warnings', warnings, '#f59e0b'),
+        ('Info', info, '#2563eb'),
+        ('Total Faults', len(faults), '#7c3aed')
+    ]
+
+    result = []
+    for title, value, color in cards:
+        result.append(html.Div([
+            html.Div(title, style={'fontSize': '12px', 'color': '#666', 'marginBottom': '8px'}),
+            html.Div(str(value), style={'fontSize': '28px', 'fontWeight': 'bold', 'color': color})
+        ], style={'padding': '18px 16px', 'backgroundColor': '#fff7ed', 'borderLeft': f'4px solid {color}', 'borderRadius': '8px'}))
+    return result
+
+
+@app.callback(Output('fault-table', 'children'), Input('vehicle-dropdown', 'value'), Input('date-range', 'start_date'), Input('date-range', 'end_date'))
+def update_fault_table(vehicle_id, start_date, end_date):
+    if vehicle_id is None:
+        return html.Div('No vehicle selected')
+    dfx = get_filtered_data(vehicle_id, start_date, end_date)
+    faults = compute_faults(dfx)
+    if faults.empty:
+        return html.Div('No active faults detected in the selected time range.')
+
+    # sort by timestamp and severity order
+    severity_order = {'Critical': 0, 'Warning': 1, 'Info': 2}
+    faults = faults.sort_values(['timestamp', 'severity'], key=lambda s: s.map(severity_order) if s.name == 'severity' else s)
+
+    rows = [
+        html.Tr([
+            html.Td(pd.to_datetime(row['timestamp']).strftime('%Y-%m-%d %H:%M:%S') if pd.notna(row['timestamp']) else 'N/A', style={'padding': '8px'}),
+            html.Td(row['severity'], style={'padding': '8px', 'fontWeight': 'bold'}),
+            html.Td(row['code'], style={'padding': '8px'}),
+            html.Td(row['message'], style={'padding': '8px'})
+        ]) for _, row in faults.iterrows()
+    ]
+
+    table = html.Table([
+        html.Thead(html.Tr([
+            html.Th('Time', style={'padding': '8px', 'backgroundColor': '#e2e8f0'}),
+            html.Th('Severity', style={'padding': '8px', 'backgroundColor': '#e2e8f0'}),
+            html.Th('Code', style={'padding': '8px', 'backgroundColor': '#e2e8f0'}),
+            html.Th('Message', style={'padding': '8px', 'backgroundColor': '#e2e8f0'})
+        ])),
+        html.Tbody(rows)
+    ], style={'width': '100%', 'borderCollapse': 'collapse'})
+    return table
 
 
 @app.callback(Output('speed-chart', 'figure'), Input('vehicle-dropdown', 'value'), Input('date-range', 'start_date'), Input('date-range', 'end_date'))
@@ -413,50 +510,6 @@ def update_throttle(vehicle_id, start_date, end_date):
     if 'throttle_position_pct' not in dfx.columns:
         return go.Figure()
     return make_line_chart(dfx['timestamp'], dfx['throttle_position_pct'], 'Throttle Position', '%', '#6366f1')
-
-
-@app.callback(Output('summary-table', 'children'), Input('vehicle-dropdown', 'value'), Input('date-range', 'start_date'), Input('date-range', 'end_date'))
-def update_summary_table(vehicle_id, start_date, end_date):
-    if vehicle_id is None:
-        return html.Div('No vehicle selected')
-    dfx = get_filtered_data(vehicle_id, start_date, end_date)
-    if dfx.empty:
-        return html.Div('No data available')
-
-    rows = []
-    metric_rows = [
-        ('Vehicle Speed (km/h)', 'vehicle_speed_kmh'),
-        ('E-Motor Speed (RPM)', 'e_motor_speed_rpm'),
-        ('Battery Voltage (V)', 'battery_voltage_v'),
-        ('Battery Current (A)', 'battery_current_a'),
-        ('Battery Temp (°C)', 'battery_temperature_c'),
-        ('Motor Temp (°C)', 'motor_temperature_c'),
-        ('SOC (%)', 'battery_soc_percent'),
-        ('Odometer (km)', 'odometer_km'),
-        ('Throttle (%)', 'throttle_position_pct'),
-        ('Tire Pressure (psi)', 'tire_pressure_psi')
-    ]
-    for label, col in metric_rows:
-        if col in dfx.columns:
-            rows.append((label, dfx[col].min(), dfx[col].mean(), dfx[col].max()))
-
-    table = html.Table([
-        html.Thead(html.Tr([
-            html.Th('Metric', style={'padding': '8px', 'backgroundColor': '#e2e8f0'}),
-            html.Th('Min', style={'padding': '8px', 'backgroundColor': '#e2e8f0'}),
-            html.Th('Average', style={'padding': '8px', 'backgroundColor': '#e2e8f0'}),
-            html.Th('Max', style={'padding': '8px', 'backgroundColor': '#e2e8f0'})
-        ])),
-        html.Tbody([
-            html.Tr([
-                html.Td(r[0], style={'padding': '8px', 'borderBottom': '1px solid #e2e8f0'}),
-                html.Td(f'{r[1]:.2f}' if pd.notna(r[1]) else 'N/A', style={'padding': '8px', 'borderBottom': '1px solid #e2e8f0'}),
-                html.Td(f'{r[2]:.2f}' if pd.notna(r[2]) else 'N/A', style={'padding': '8px', 'borderBottom': '1px solid #e2e8f0'}),
-                html.Td(f'{r[3]:.2f}' if pd.notna(r[3]) else 'N/A', style={'padding': '8px', 'borderBottom': '1px solid #e2e8f0'})
-            ]) for r in rows
-        ])
-    ], style={'width': '100%', 'borderCollapse': 'collapse'})
-    return table
 
 
 if __name__ == '__main__':
