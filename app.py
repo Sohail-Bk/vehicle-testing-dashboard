@@ -105,6 +105,18 @@ def get_filtered_data(vehicle_id, start_date, end_date):
     return filtered
 
 
+def get_filtered_data_for_vehicles(vehicle_ids, start_date, end_date):
+    if not vehicle_ids:
+        return pd.DataFrame(columns=get_current_df().columns)
+    frame = get_current_df()
+    filtered = frame[frame['vehicle_id'].isin(vehicle_ids)].copy()
+    if start_date is not None:
+        filtered = filtered[filtered['timestamp'] >= pd.Timestamp(start_date)]
+    if end_date is not None:
+        filtered = filtered[filtered['timestamp'] <= pd.Timestamp(end_date) + pd.Timedelta(days=1)]
+    return filtered
+
+
 def make_line_chart(x, y, title, yaxis_title, color='#2563eb'):
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=x, y=y, mode='lines', line={'color': color, 'width': 2}, name=title))
@@ -200,6 +212,19 @@ app.layout = html.Div([
         ], style={'flex': '1', 'paddingLeft': '10px'})
     ], style={'display': 'flex', 'padding': '20px', 'backgroundColor': '#f5f7fb'}),
 
+    html.Div([
+        html.Div([
+            html.Label('Compare vehicles', style={'fontWeight': 'bold'}),
+            dcc.Dropdown(
+                id='comparison-vehicles',
+                options=[],
+                value=[],
+                multi=True,
+                style={'marginTop': '6px'}
+            )
+        ], style={'padding': '0 20px 20px', 'maxWidth': '60%'}),
+    ]),
+
     html.Div(id='status-message', style={'padding': '0 20px', 'color': '#0f766e', 'fontWeight': 'bold'}),
     html.Div([
         html.Button('Export current report', id='export-report-btn', n_clicks=0, style={
@@ -214,8 +239,18 @@ app.layout = html.Div([
         }),
         dcc.Download(id='download-report')
     ]),
+
     html.Div(id='fault-cards', style={'display': 'grid', 'gridTemplateColumns': 'repeat(auto-fit, minmax(200px, 1fr))', 'gap': '16px', 'padding': '0 20px 20px'}),
     html.Div(id='kpi-cards', style={'display': 'grid', 'gridTemplateColumns': 'repeat(auto-fit, minmax(200px, 1fr))', 'gap': '16px', 'padding': '0 20px 20px'}),
+
+    html.Div([
+        html.H3('Vehicle Comparison', style={'marginLeft': '20px'}),
+        html.Div(id='comparison-kpis', style={'display': 'grid', 'gridTemplateColumns': 'repeat(auto-fit, minmax(220px, 1fr))', 'gap': '16px', 'padding': '0 20px 20px'}),
+        html.Div([dcc.Graph(id='comparison-speed-chart')], style={'padding': '10px'}),
+        html.Div([dcc.Graph(id='comparison-soc-chart')], style={'padding': '10px'}),
+        html.Div([dcc.Graph(id='comparison-temp-chart')], style={'padding': '10px'}),
+        html.Div(id='comparison-table', style={'padding': '20px'})
+    ]),
 
     html.Div([
         html.Div([dcc.Graph(id='speed-chart')], style={'flex': '1', 'padding': '10px'}),
@@ -252,6 +287,8 @@ app.layout = html.Div([
 @app.callback(
     Output('vehicle-dropdown', 'options'),
     Output('vehicle-dropdown', 'value'),
+    Output('comparison-vehicles', 'options'),
+    Output('comparison-vehicles', 'value'),
     Output('date-range', 'start_date'),
     Output('date-range', 'end_date'),
     Output('status-message', 'children'),
@@ -266,9 +303,12 @@ def update_data_source(source_value, contents, filename):
         frame = sample_df
         vehicles_list = sorted(frame['vehicle_id'].dropna().astype(str).unique().tolist())
         default_value = vehicles_list[0] if vehicles_list else None
+        comparison_default = vehicles_list[: min(3, len(vehicles_list))]
         return (
             [{'label': v, 'value': v} for v in vehicles_list],
             default_value,
+            [{'label': v, 'value': v} for v in vehicles_list],
+            comparison_default,
             frame['timestamp'].min().date() if not frame.empty else None,
             frame['timestamp'].max().date() if not frame.empty else None,
             'Sample data loaded.'
@@ -282,10 +322,13 @@ def update_data_source(source_value, contents, filename):
         uploaded_df = frame
         vehicles_list = sorted(frame['vehicle_id'].dropna().astype(str).unique().tolist())
         default_value = vehicles_list[0] if vehicles_list else None
+        comparison_default = vehicles_list[: min(3, len(vehicles_list))]
         message = f'Loaded uploaded file: {filename}'
         return (
             [{'label': v, 'value': v} for v in vehicles_list],
             default_value,
+            [{'label': v, 'value': v} for v in vehicles_list],
+            comparison_default,
             frame['timestamp'].min().date() if not frame.empty else None,
             frame['timestamp'].max().date() if not frame.empty else None,
             message
@@ -294,9 +337,12 @@ def update_data_source(source_value, contents, filename):
     frame = sample_df
     vehicles_list = sorted(frame['vehicle_id'].dropna().astype(str).unique().tolist())
     default_value = vehicles_list[0] if vehicles_list else None
+    comparison_default = vehicles_list[: min(3, len(vehicles_list))]
     return (
         [{'label': v, 'value': v} for v in vehicles_list],
         default_value,
+        [{'label': v, 'value': v} for v in vehicles_list],
+        comparison_default,
         frame['timestamp'].min().date() if not frame.empty else None,
         frame['timestamp'].max().date() if not frame.empty else None,
         'No file uploaded yet. Sample data is active.'
@@ -352,11 +398,134 @@ def update_kpis(vehicle_id, start_date, end_date):
 
 
 @app.callback(
-    Output('fault-cards', 'children'),
-    Input('vehicle-dropdown', 'value'),
+    Output('comparison-kpis', 'children'),
+    Input('comparison-vehicles', 'value'),
     Input('date-range', 'start_date'),
     Input('date-range', 'end_date')
 )
+def update_comparison_kpis(vehicle_ids, start_date, end_date):
+    if not vehicle_ids:
+        return []
+    frame = get_filtered_data_for_vehicles(vehicle_ids, start_date, end_date)
+    if frame.empty:
+        return []
+
+    summary = []
+    for vehicle in vehicle_ids:
+        dfx = frame[frame['vehicle_id'] == vehicle].copy()
+        if dfx.empty:
+            continue
+        summary.append({
+            'vehicle': vehicle,
+            'avg_speed': dfx['vehicle_speed_kmh'].mean() if 'vehicle_speed_kmh' in dfx.columns else 0,
+            'final_soc': dfx['battery_soc_percent'].iloc[-1] if 'battery_soc_percent' in dfx.columns else 0,
+            'max_temp': dfx['battery_temperature_c'].max() if 'battery_temperature_c' in dfx.columns else 0,
+            'peak_rpm': dfx['e_motor_speed_rpm'].max() if 'e_motor_speed_rpm' in dfx.columns else 0,
+        })
+
+    cards = []
+    for item in summary:
+        cards.append(html.Div([
+            html.Div(item['vehicle'], style={'fontSize': '13px', 'color': '#667085', 'marginBottom': '8px'}),
+            html.Div(f"Avg {item['avg_speed']:.1f} km/h", style={'fontSize': '18px', 'fontWeight': 'bold'}),
+            html.Div(f"SOC {item['final_soc']:.1f}%", style={'fontSize': '14px'}),
+            html.Div(f"Max temp {item['max_temp']:.1f}°C", style={'fontSize': '14px'}),
+            html.Div(f"Peak RPM {item['peak_rpm']:.0f}", style={'fontSize': '14px'})
+        ], style={'padding': '18px 16px', 'backgroundColor': '#f8fafc', 'borderLeft': '4px solid #0f4c81', 'borderRadius': '8px'}))
+    return cards
+
+
+@app.callback(Output('comparison-speed-chart', 'figure'), Input('comparison-vehicles', 'value'), Input('date-range', 'start_date'), Input('date-range', 'end_date'))
+def update_comparison_speed(vehicle_ids, start_date, end_date):
+    if not vehicle_ids:
+        return go.Figure()
+    frame = get_filtered_data_for_vehicles(vehicle_ids, start_date, end_date)
+    fig = go.Figure()
+    for vehicle in vehicle_ids:
+        dfx = frame[frame['vehicle_id'] == vehicle].copy()
+        if 'vehicle_speed_kmh' in dfx.columns:
+            fig.add_trace(go.Scatter(x=dfx['timestamp'], y=dfx['vehicle_speed_kmh'], mode='lines', name=vehicle))
+    fig.update_layout(title='Vehicle Speed Comparison', template='plotly_white', height=300, hovermode='x unified')
+    fig.update_xaxes(title_text='Time')
+    fig.update_yaxes(title_text='km/h')
+    return fig
+
+
+@app.callback(Output('comparison-soc-chart', 'figure'), Input('comparison-vehicles', 'value'), Input('date-range', 'start_date'), Input('date-range', 'end_date'))
+def update_comparison_soc(vehicle_ids, start_date, end_date):
+    if not vehicle_ids:
+        return go.Figure()
+    frame = get_filtered_data_for_vehicles(vehicle_ids, start_date, end_date)
+    fig = go.Figure()
+    for vehicle in vehicle_ids:
+        dfx = frame[frame['vehicle_id'] == vehicle].copy()
+        if 'battery_soc_percent' in dfx.columns:
+            fig.add_trace(go.Scatter(x=dfx['timestamp'], y=dfx['battery_soc_percent'], mode='lines', name=vehicle))
+    fig.update_layout(title='SOC Comparison', template='plotly_white', height=300, hovermode='x unified')
+    fig.update_xaxes(title_text='Time')
+    fig.update_yaxes(title_text='%')
+    return fig
+
+
+@app.callback(Output('comparison-temp-chart', 'figure'), Input('comparison-vehicles', 'value'), Input('date-range', 'start_date'), Input('date-range', 'end_date'))
+def update_comparison_temp(vehicle_ids, start_date, end_date):
+    if not vehicle_ids:
+        return go.Figure()
+    frame = get_filtered_data_for_vehicles(vehicle_ids, start_date, end_date)
+    fig = go.Figure()
+    for vehicle in vehicle_ids:
+        dfx = frame[frame['vehicle_id'] == vehicle].copy()
+        if 'battery_temperature_c' in dfx.columns:
+            fig.add_trace(go.Scatter(x=dfx['timestamp'], y=dfx['battery_temperature_c'], mode='lines', name=f'{vehicle} Battery'))
+    fig.update_layout(title='Battery Temperature Comparison', template='plotly_white', height=300, hovermode='x unified')
+    fig.update_xaxes(title_text='Time')
+    fig.update_yaxes(title_text='°C')
+    return fig
+
+
+@app.callback(Output('comparison-table', 'children'), Input('comparison-vehicles', 'value'), Input('date-range', 'start_date'), Input('date-range', 'end_date'))
+def update_comparison_table(vehicle_ids, start_date, end_date):
+    if not vehicle_ids:
+        return html.Div('Select vehicles to compare')
+    frame = get_filtered_data_for_vehicles(vehicle_ids, start_date, end_date)
+    if frame.empty:
+        return html.Div('No data available')
+
+    rows = []
+    for vehicle in vehicle_ids:
+        dfx = frame[frame['vehicle_id'] == vehicle].copy()
+        if dfx.empty:
+            continue
+        rows.append({
+            'Vehicle': vehicle,
+            'Avg Speed': dfx['vehicle_speed_kmh'].mean() if 'vehicle_speed_kmh' in dfx.columns else 0,
+            'Max Temp': dfx['battery_temperature_c'].max() if 'battery_temperature_c' in dfx.columns else 0,
+            'Final SOC': dfx['battery_soc_percent'].iloc[-1] if 'battery_soc_percent' in dfx.columns else 0,
+            'Peak RPM': dfx['e_motor_speed_rpm'].max() if 'e_motor_speed_rpm' in dfx.columns else 0,
+        })
+
+    table = html.Table([
+        html.Thead(html.Tr([
+            html.Th('Vehicle', style={'padding': '8px', 'backgroundColor': '#e2e8f0'}),
+            html.Th('Avg Speed', style={'padding': '8px', 'backgroundColor': '#e2e8f0'}),
+            html.Th('Max Temp', style={'padding': '8px', 'backgroundColor': '#e2e8f0'}),
+            html.Th('Final SOC', style={'padding': '8px', 'backgroundColor': '#e2e8f0'}),
+            html.Th('Peak RPM', style={'padding': '8px', 'backgroundColor': '#e2e8f0'})
+        ])),
+        html.Tbody([
+            html.Tr([
+                html.Td(row['Vehicle'], style={'padding': '8px'}),
+                html.Td(f"{row['Avg Speed']:.1f}", style={'padding': '8px'}),
+                html.Td(f"{row['Max Temp']:.1f}", style={'padding': '8px'}),
+                html.Td(f"{row['Final SOC']:.1f}", style={'padding': '8px'}),
+                html.Td(f"{row['Peak RPM']:.0f}", style={'padding': '8px'})
+            ]) for row in rows
+        ])
+    ], style={'width': '100%', 'borderCollapse': 'collapse'})
+    return table
+
+
+@app.callback(Output('fault-cards', 'children'), Input('vehicle-dropdown', 'value'), Input('date-range', 'start_date'), Input('date-range', 'end_date'))
 def update_fault_cards(vehicle_id, start_date, end_date):
     if vehicle_id is None:
         return []
