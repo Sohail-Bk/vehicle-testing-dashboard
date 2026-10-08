@@ -3,3 +3,5 @@ plotly==5.17.0
 pandas==2.1.1
 numpy==1.26.0
 gunicorn==21.2.0
+reportlab==4.0.7
+kaleido==0.2.1
