@@ -3,12 +3,13 @@ from io import BytesIO, StringIO
 
 import dash
 import pandas as pd
+import plotly.io as pio
 from dash import Input, Output, State, dcc, html
 import plotly.graph_objects as go
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import getSampleStyleSheet
-from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 DATA_PATH = 'data/sample_vehicle_data.csv'
 
@@ -188,6 +189,11 @@ def get_kpi_rows(dfx):
     return rows
 
 
+def _chart_image(fig, width=260, height=160):
+    png_bytes = pio.to_image(fig, format='png', width=width * 3, height=height * 3, engine='kaleido')
+    return Image(BytesIO(png_bytes), width=width, height=height)
+
+
 def export_report_pdf(dfx, vehicle_id, start_date, end_date):
     buffer = BytesIO()
     doc = SimpleDocTemplate(
@@ -205,7 +211,7 @@ def export_report_pdf(dfx, vehicle_id, start_date, end_date):
     story.append(Paragraph(f'Vehicle: {vehicle_id}', styles['Heading2']))
     story.append(Paragraph(f'Date range: {start_date or "All"} to {end_date or "All"}', styles['Normal']))
     story.append(Paragraph(f'Generated: {pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")}', styles['Normal']))
-    story.append(Spacer(1, 16))
+    story.append(Spacer(1, 14))
 
     kpi_rows = [['Metric', 'Value']] + get_kpi_rows(dfx)
     kpi_table = Table(kpi_rows, colWidths=[200, 220])
@@ -245,6 +251,37 @@ def export_report_pdf(dfx, vehicle_id, start_date, end_date):
         story.append(fault_table)
 
     story.append(Spacer(1, 18))
+    story.append(Paragraph('Key Trend Charts', styles['Heading2']))
+    story.append(Spacer(1, 8))
+
+    chart_specs = [
+        ('Vehicle Speed', make_line_chart(dfx['timestamp'], dfx['vehicle_speed_kmh'], 'Vehicle Speed', 'km/h', '#2563eb')),
+        ('Battery SOC', make_line_chart(dfx['timestamp'], dfx['battery_soc_percent'], 'Battery SOC', '%', '#9333ea')),
+        ('Battery Temperature', make_line_chart(dfx['timestamp'], dfx['battery_temperature_c'], 'Battery Temperature', '°C', '#f59e0b')),
+        ('Battery Current', make_line_chart(dfx['timestamp'], dfx['battery_current_a'], 'Battery Current', 'A', '#ef4444')),
+    ]
+
+    chart_rows = []
+    for title, fig in chart_specs:
+        if fig.data and len(fig.data[0].y) > 0:
+            chart_rows.append([Paragraph(title, styles['Heading3']), _chart_image(fig, width=250, height=150)])
+
+    if chart_rows:
+        for i in range(0, len(chart_rows), 2):
+            row = chart_rows[i:i+2]
+            while len(row) < 2:
+                row.append('')
+            table = Table(row, colWidths=[150, 300])
+            table.setStyle(TableStyle([
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                ('LEFTPADDING', (0, 0), (-1, -1), 6),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
+            ]))
+            story.append(table)
+            story.append(Spacer(1, 12))
+
+    story.append(Spacer(1, 18))
+    story.append(Paragraph('Data Preview', styles['Heading2']))
     preview_rows = [['Timestamp', 'Speed (km/h)', 'SOC (%)', 'Battery Temp (°C)', 'Status']]
     for _, row in dfx.head(12).iterrows():
         preview_rows.append([
@@ -262,7 +299,6 @@ def export_report_pdf(dfx, vehicle_id, start_date, end_date):
         ('GRID', (0, 0), (-1, -1), 1, colors.grey),
         ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.whitesmoke, colors.white]),
     ]))
-    story.append(Paragraph('Data Preview', styles['Heading2']))
     story.append(preview_table)
 
     doc.build(story)
