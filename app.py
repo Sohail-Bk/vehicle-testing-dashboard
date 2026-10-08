@@ -1,9 +1,14 @@
 import os
-import pandas as pd
+from io import BytesIO, StringIO
+
 import dash
-from dash import dcc, html, Input, Output, State
+import pandas as pd
+from dash import Input, Output, State, dcc, html
 import plotly.graph_objects as go
-from io import StringIO
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import letter
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 DATA_PATH = 'data/sample_vehicle_data.csv'
 
@@ -163,6 +168,108 @@ def compute_faults(dfx):
     return pd.DataFrame(faults)
 
 
+def get_kpi_rows(dfx):
+    rows = []
+    if 'vehicle_speed_kmh' in dfx.columns:
+        rows.append(('Max Speed', f"{dfx['vehicle_speed_kmh'].max():.1f} km/h"))
+        rows.append(('Avg Speed', f"{dfx['vehicle_speed_kmh'].mean():.1f} km/h"))
+    if 'odometer_km' in dfx.columns and len(dfx) > 0:
+        rows.append(('Distance', f"{dfx['odometer_km'].iloc[-1] - dfx['odometer_km'].iloc[0]:.1f} km"))
+    if 'battery_soc_percent' in dfx.columns:
+        rows.append(('Final SOC', f"{dfx['battery_soc_percent'].iloc[-1]:.1f}%"))
+    if 'battery_temperature_c' in dfx.columns:
+        rows.append(('Max Battery Temp', f"{dfx['battery_temperature_c'].max():.1f} °C"))
+    if 'e_motor_speed_rpm' in dfx.columns:
+        rows.append(('Peak RPM', f"{dfx['e_motor_speed_rpm'].max():.0f}"))
+    if 'test_status' in dfx.columns:
+        rows.append(('Status', dfx['test_status'].mode().iloc[0] if not dfx['test_status'].empty else 'N/A'))
+    if 'regenerative_braking_kw' in dfx.columns:
+        rows.append(('Total Regen', f"{dfx['regenerative_braking_kw'].sum():.1f} kW"))
+    return rows
+
+
+def export_report_pdf(dfx, vehicle_id, start_date, end_date):
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=letter,
+        rightMargin=40,
+        leftMargin=40,
+        topMargin=40,
+        bottomMargin=40,
+    )
+    styles = getSampleStyleSheet()
+    story = []
+    story.append(Paragraph('EV Vehicle Testing Dashboard Report', styles['Title']))
+    story.append(Spacer(1, 12))
+    story.append(Paragraph(f'Vehicle: {vehicle_id}', styles['Heading2']))
+    story.append(Paragraph(f'Date range: {start_date or "All"} to {end_date or "All"}', styles['Normal']))
+    story.append(Paragraph(f'Generated: {pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")}', styles['Normal']))
+    story.append(Spacer(1, 16))
+
+    kpi_rows = [['Metric', 'Value']] + get_kpi_rows(dfx)
+    kpi_table = Table(kpi_rows, colWidths=[200, 220])
+    kpi_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#0f4c81')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('GRID', (0, 0), (-1, -1), 1, colors.grey),
+        ('ALIGN', (1, 1), (-1, -1), 'RIGHT'),
+        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.whitesmoke, colors.white]),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+    ]))
+    story.append(kpi_table)
+    story.append(Spacer(1, 18))
+
+    faults = compute_faults(dfx)
+    fault_rows = [['Time', 'Severity', 'Code', 'Message']]
+    for _, row in faults.head(10).iterrows():
+        fault_rows.append([
+            pd.to_datetime(row['timestamp']).strftime('%Y-%m-%d %H:%M:%S') if pd.notna(row['timestamp']) else 'N/A',
+            row['severity'],
+            row['code'],
+            row['message']
+        ])
+
+    if len(fault_rows) == 1:
+        story.append(Paragraph('No active faults detected in the selected time range.', styles['Normal']))
+    else:
+        fault_table = Table(fault_rows, colWidths=[90, 65, 75, 275])
+        fault_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#cbd5e1')),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.black),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('GRID', (0, 0), (-1, -1), 1, colors.grey),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.whitesmoke, colors.white]),
+        ]))
+        story.append(fault_table)
+
+    story.append(Spacer(1, 18))
+    preview_rows = [['Timestamp', 'Speed (km/h)', 'SOC (%)', 'Battery Temp (°C)', 'Status']]
+    for _, row in dfx.head(12).iterrows():
+        preview_rows.append([
+            pd.to_datetime(row['timestamp']).strftime('%Y-%m-%d %H:%M:%S') if pd.notna(row.get('timestamp')) else 'N/A',
+            f"{row['vehicle_speed_kmh']:.1f}" if pd.notna(row.get('vehicle_speed_kmh')) else 'N/A',
+            f"{row['battery_soc_percent']:.1f}" if pd.notna(row.get('battery_soc_percent')) else 'N/A',
+            f"{row['battery_temperature_c']:.1f}" if pd.notna(row.get('battery_temperature_c')) else 'N/A',
+            str(row['test_status']) if pd.notna(row.get('test_status')) else 'N/A'
+        ])
+    preview_table = Table(preview_rows, colWidths=[90, 80, 65, 95, 160])
+    preview_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#e2e8f0')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.black),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('GRID', (0, 0), (-1, -1), 1, colors.grey),
+        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.whitesmoke, colors.white]),
+    ]))
+    story.append(Paragraph('Data Preview', styles['Heading2']))
+    story.append(preview_table)
+
+    doc.build(story)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
 app.layout = html.Div([
     html.Div([
         html.H1('🚗 EV Vehicle Testing Dashboard', style={'color': 'white', 'margin': 0}),
@@ -227,8 +334,21 @@ app.layout = html.Div([
 
     html.Div(id='status-message', style={'padding': '0 20px', 'color': '#0f766e', 'fontWeight': 'bold'}),
     html.Div([
+        html.Div([
+            html.Label('Export format', style={'fontWeight': 'bold'}),
+            dcc.Dropdown(
+                id='report-format',
+                options=[
+                    {'label': 'PDF', 'value': 'pdf'},
+                    {'label': 'CSV', 'value': 'csv'}
+                ],
+                value='pdf',
+                clearable=False,
+                style={'marginTop': '6px', 'width': '160px'}
+            )
+        ], style={'margin': '0 20px 20px 20px'}),
         html.Button('Export current report', id='export-report-btn', n_clicks=0, style={
-            'margin': '0 20px 20px 20px',
+            'margin': '0 20px 20px 0',
             'padding': '10px 18px',
             'backgroundColor': '#0f4c81',
             'color': 'white',
@@ -238,7 +358,7 @@ app.layout = html.Div([
             'fontWeight': 'bold'
         }),
         dcc.Download(id='download-report')
-    ]),
+    ], style={'display': 'flex', 'alignItems': 'flex-end', 'flexWrap': 'wrap'}),
 
     html.Div(id='fault-cards', style={'display': 'grid', 'gridTemplateColumns': 'repeat(auto-fit, minmax(200px, 1fr))', 'gap': '16px', 'padding': '0 20px 20px'}),
     html.Div(id='kpi-cards', style={'display': 'grid', 'gridTemplateColumns': 'repeat(auto-fit, minmax(200px, 1fr))', 'gap': '16px', 'padding': '0 20px 20px'}),
@@ -698,19 +818,26 @@ def update_throttle(vehicle_id, start_date, end_date):
     State('vehicle-dropdown', 'value'),
     State('date-range', 'start_date'),
     State('date-range', 'end_date'),
+    State('report-format', 'value'),
     prevent_initial_call=True
 )
-def export_report(n_clicks, vehicle_id, start_date, end_date):
+def export_report(n_clicks, vehicle_id, start_date, end_date, report_format):
     if vehicle_id is None:
         return dash.no_update
     dfx = get_filtered_data(vehicle_id, start_date, end_date)
     if dfx.empty:
         return dash.no_update
 
+    timestamp = pd.Timestamp.today().strftime('%Y%m%d_%H%M%S')
+    filename_base = f'{vehicle_id}_report_{timestamp}'
+
+    if report_format == 'pdf':
+        pdf_bytes = export_report_pdf(dfx, vehicle_id, start_date, end_date)
+        return dcc.send_bytes(pdf_bytes, filename=f'{filename_base}.pdf')
+
     csv_buffer = StringIO()
     dfx.to_csv(csv_buffer, index=False)
-    filename = f'{vehicle_id}_report_{pd.Timestamp.today().strftime("%Y%m%d_%H%M%S")}.csv'
-    return dcc.send_string(csv_buffer.getvalue(), filename=filename)
+    return dcc.send_string(csv_buffer.getvalue(), filename=f'{filename_base}.csv')
 
 
 if __name__ == '__main__':
