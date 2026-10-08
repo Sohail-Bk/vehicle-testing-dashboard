@@ -306,6 +306,26 @@ def export_report_pdf(dfx, vehicle_id, start_date, end_date):
     return buffer.getvalue()
 
 
+def build_report_download(vehicle_id, start_date, end_date, report_format):
+    if vehicle_id is None:
+        return dash.no_update
+
+    dfx = get_filtered_data(vehicle_id, start_date, end_date)
+    if dfx.empty:
+        return dash.no_update
+
+    timestamp = pd.Timestamp.today().strftime('%Y%m%d_%H%M%S')
+    filename_base = f'{vehicle_id}_report_{timestamp}'
+
+    if report_format == 'pdf':
+        pdf_bytes = export_report_pdf(dfx, vehicle_id, start_date, end_date)
+        return dcc.send_bytes(pdf_bytes, filename=f'{filename_base}.pdf')
+
+    csv_buffer = StringIO()
+    dfx.to_csv(csv_buffer, index=False)
+    return dcc.send_string(csv_buffer.getvalue(), filename=f'{filename_base}.csv')
+
+
 app.layout = html.Div([
     html.Div([
         html.H1('🚗 EV Vehicle Testing Dashboard', style={'color': 'white', 'margin': 0}),
@@ -369,32 +389,49 @@ app.layout = html.Div([
     ]),
 
     html.Div(id='status-message', style={'padding': '0 20px', 'color': '#0f766e', 'fontWeight': 'bold'}),
+
     html.Div([
         html.Div([
-            html.Label('Export format', style={'fontWeight': 'bold'}),
-            dcc.Dropdown(
-                id='report-format',
-                options=[
-                    {'label': 'PDF', 'value': 'pdf'},
-                    {'label': 'CSV', 'value': 'csv'}
-                ],
-                value='pdf',
-                clearable=False,
-                style={'marginTop': '6px', 'width': '160px'}
-            )
-        ], style={'margin': '0 20px 20px 20px'}),
-        html.Button('Export current report', id='export-report-btn', n_clicks=0, style={
-            'margin': '0 20px 20px 0',
-            'padding': '10px 18px',
-            'backgroundColor': '#0f4c81',
-            'color': 'white',
-            'border': 'none',
-            'borderRadius': '8px',
-            'cursor': 'pointer',
-            'fontWeight': 'bold'
-        }),
-        dcc.Download(id='download-report')
-    ], style={'display': 'flex', 'alignItems': 'flex-end', 'flexWrap': 'wrap'}),
+            html.H3('Report overview', style={'margin': '0 0 12px 0'}),
+            html.Div(id='report-summary-panel', style={'padding': '12px', 'backgroundColor': '#f8fafc', 'borderRadius': '8px', 'border': '1px solid #e2e8f0'})
+        ], style={'flex': '1', 'minWidth': '320px', 'padding': '0 20px 20px'}),
+        html.Div([
+            html.Div([
+                html.Label('Export format', style={'fontWeight': 'bold'}),
+                dcc.Dropdown(
+                    id='report-format',
+                    options=[
+                        {'label': 'PDF', 'value': 'pdf'},
+                        {'label': 'CSV', 'value': 'csv'}
+                    ],
+                    value='pdf',
+                    clearable=False,
+                    style={'marginTop': '6px', 'width': '160px'}
+                )
+            ], style={'marginBottom': '12px'}),
+            html.Button('Export current report', id='export-report-btn', n_clicks=0, style={
+                'padding': '10px 18px',
+                'backgroundColor': '#0f4c81',
+                'color': 'white',
+                'border': 'none',
+                'borderRadius': '8px',
+                'cursor': 'pointer',
+                'fontWeight': 'bold',
+                'marginRight': '10px'
+            }),
+            html.Button('Download PDF', id='report-view-btn', n_clicks=0, style={
+                'padding': '10px 18px',
+                'backgroundColor': '#0ea5e9',
+                'color': 'white',
+                'border': 'none',
+                'borderRadius': '8px',
+                'cursor': 'pointer',
+                'fontWeight': 'bold'
+            }),
+            dcc.Download(id='download-report'),
+            dcc.Download(id='report-view-download')
+        ], style={'display': 'flex', 'flexDirection': 'column', 'alignItems': 'flex-start', 'padding': '0 20px 20px', 'minWidth': '240px'})
+    ], style={'display': 'flex', 'flexWrap': 'wrap', 'alignItems': 'stretch'}),
 
     html.Div(id='fault-cards', style={'display': 'grid', 'gridTemplateColumns': 'repeat(auto-fit, minmax(200px, 1fr))', 'gap': '16px', 'padding': '0 20px 20px'}),
     html.Div(id='kpi-cards', style={'display': 'grid', 'gridTemplateColumns': 'repeat(auto-fit, minmax(200px, 1fr))', 'gap': '16px', 'padding': '0 20px 20px'}),
@@ -518,6 +555,42 @@ def show_upload_style(data_source):
         'marginTop': '10px',
         'display': 'block' if data_source == 'upload' else 'none'
     }
+
+
+@app.callback(
+    Output('report-summary-panel', 'children'),
+    Input('vehicle-dropdown', 'value'),
+    Input('date-range', 'start_date'),
+    Input('date-range', 'end_date')
+)
+def update_report_summary(vehicle_id, start_date, end_date):
+    if vehicle_id is None:
+        return html.Div('Select a vehicle to generate a report.')
+
+    dfx = get_filtered_data(vehicle_id, start_date, end_date)
+    if dfx.empty:
+        return html.Div('No data available for this time range.')
+
+    faults = compute_faults(dfx)
+    avg_speed = dfx['vehicle_speed_kmh'].mean() if 'vehicle_speed_kmh' in dfx.columns else 0
+    final_soc = dfx['battery_soc_percent'].iloc[-1] if 'battery_soc_percent' in dfx.columns else 0
+    record_count = len(dfx)
+    summary_items = [
+        ('Vehicle', vehicle_id),
+        ('Records', f'{record_count}'),
+        ('Avg speed', f'{avg_speed:.1f} km/h'),
+        ('Final SOC', f'{final_soc:.1f}%'),
+        ('Faults', f'{len(faults)}'),
+        ('Range', f'{start_date or "All"} → {end_date or "All"}')
+    ]
+
+    return html.Div([
+        html.Div([
+            html.Div(label, style={'fontSize': '12px', 'color': '#667085', 'marginBottom': '4px'}),
+            html.Div(value, style={'fontSize': '18px', 'fontWeight': 'bold', 'color': '#0f172a'})
+        ], style={'flex': '1 1 140px', 'padding': '8px 10px', 'borderRight': '1px solid #e2e8f0'})
+        for label, value in summary_items
+    ], style={'display': 'flex', 'flexWrap': 'wrap', 'gap': '8px'})
 
 
 @app.callback(
@@ -858,22 +931,19 @@ def update_throttle(vehicle_id, start_date, end_date):
     prevent_initial_call=True
 )
 def export_report(n_clicks, vehicle_id, start_date, end_date, report_format):
-    if vehicle_id is None:
-        return dash.no_update
-    dfx = get_filtered_data(vehicle_id, start_date, end_date)
-    if dfx.empty:
-        return dash.no_update
+    return build_report_download(vehicle_id, start_date, end_date, report_format)
 
-    timestamp = pd.Timestamp.today().strftime('%Y%m%d_%H%M%S')
-    filename_base = f'{vehicle_id}_report_{timestamp}'
 
-    if report_format == 'pdf':
-        pdf_bytes = export_report_pdf(dfx, vehicle_id, start_date, end_date)
-        return dcc.send_bytes(pdf_bytes, filename=f'{filename_base}.pdf')
-
-    csv_buffer = StringIO()
-    dfx.to_csv(csv_buffer, index=False)
-    return dcc.send_string(csv_buffer.getvalue(), filename=f'{filename_base}.csv')
+@app.callback(
+    Output('report-view-download', 'data'),
+    Input('report-view-btn', 'n_clicks'),
+    State('vehicle-dropdown', 'value'),
+    State('date-range', 'start_date'),
+    State('date-range', 'end_date'),
+    prevent_initial_call=True
+)
+def export_report_view(n_clicks, vehicle_id, start_date, end_date):
+    return build_report_download(vehicle_id, start_date, end_date, 'pdf')
 
 
 if __name__ == '__main__':
