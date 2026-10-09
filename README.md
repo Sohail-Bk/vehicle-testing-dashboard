@@ -10,6 +10,22 @@ A simple Dash-Plotly based automotive vehicle testing reporting solution for tim
 - Upload support for real CSV files with automatic column mapping
 - Summary table with Min / Average / Max values
 
+## Project structure
+```text
+vehicle-testing-dashboard/
+├── data/
+│   ├── .gitkeep
+│   ├── generate_sample_data.py
+│   └── sample_vehicle_data.csv
+├── viz/
+│   ├── __init__.py
+│   └── app.py
+├── app.py
+├── generate_sample_data.py
+├── requirements.txt
+└── README.md
+```
+
 ## Quick start
 
 ```bash
