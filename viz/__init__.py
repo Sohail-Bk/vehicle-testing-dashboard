@@ -1,14 +1,13 @@
-from pathlib import Path
-import sys
+import dash
 
-ROOT_DIR = Path(__file__).resolve().parents[1]
-if str(ROOT_DIR) not in sys.path:
-    sys.path.insert(0, str(ROOT_DIR))
+from .callbacks import register_callbacks
+from .layout import build_layout
 
-from data.generate_sample_data import generate_all_data
-
-
-DATA_PATH = ROOT_DIR / 'data' / 'sample_vehicle_data.csv'
+app = dash.Dash(__name__)
+app.title = 'EV Vehicle Testing Dashboard'
+app.layout = build_layout()
+register_callbacks(app)
 
 
-# This file intentionally exists to keep the package importable when the app is run from the viz/ folder.
+if __name__ == '__main__':
+    app.run(debug=True, host='0.0.0.0', port=8050)
